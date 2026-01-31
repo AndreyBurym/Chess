@@ -1,0 +1,275 @@
+<!-- =================================================================
+     ADD THIS TO YOUR CHESS HTML FILE
+     ================================================================= -->
+
+<!-- 1. ADD THIS BUTTON IN THE "GAME" TAB (around line 863) -->
+<!-- Add it right after the "Multiplayer" button -->
+
+<button class="btn btn-warning btn-block" onclick="manualConnectServer()" style="margin-top: 12px;">
+    🔌 Connect to Multiplayer Server
+</button>
+
+<!-- ================================================================= -->
+
+<!-- 2. ADD THESE VARIABLES at the top of your <script> section -->
+<!-- Add right after: var countdownInterval = null; -->
+
+// WebSocket connection
+var ws = null;
+var wsUrl = 'ws://localhost:8080'; // Change to your server URL for production
+
+<!-- ================================================================= -->
+
+<!-- 3. REPLACE YOUR EXISTING MULTIPLAYER FUNCTIONS with these -->
+<!-- Find and replace each function in your script -->
+
+<script>
+// Connect to WebSocket server
+function connectWebSocket() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        alert('Already connected!');
+        return;
+    }
+    
+    updateConnectionStatus('Connecting...', false);
+    ws = new WebSocket(wsUrl);
+    
+    ws.onopen = () => {
+        console.log('Connected to multiplayer server');
+        updateConnectionStatus('✅ Server Connected', true);
+        alert('Connected to multiplayer server! You can now create or join lobbies.');
+    };
+    
+    ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        handleServerMessage(data);
+    };
+    
+    ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        updateConnectionStatus('Connection error', false);
+        alert('Failed to connect to server. Make sure the server is running.');
+    };
+    
+    ws.onclose = () => {
+        console.log('Disconnected from server');
+        updateConnectionStatus('Disconnected', false);
+        
+        // Try to reconnect if in multiplayer mode
+        if (multiplayerMode) {
+            setTimeout(() => {
+                connectWebSocket();
+            }, 3000);
+        }
+    };
+}
+
+// Handle messages from server
+function handleServerMessage(data) {
+    console.log('Server message:', data);
+    
+    switch(data.type) {
+        case 'LOBBY_CREATED':
+            currentLobby = data.code;
+            playerColor = data.color;
+            document.getElementById('displayLobbyCode').textContent = data.code;
+            updateConnectionStatus('Waiting in lobby ' + data.code, true);
+            break;
+            
+        case 'LOBBY_JOINED':
+            currentLobby = data.code;
+            playerColor = data.color;
+            updateConnectionStatus('Joined lobby ' + data.code, true);
+            break;
+            
+        case 'OPPONENT_JOINED':
+            foundOpponent();
+            break;
+            
+        case 'START_GAME':
+            playerColor = data.color;
+            hideMultiplayerMenu();
+            resetGame();
+            
+            if (playerColor === 'black') {
+                board.flip();
+            }
+            
+            updateConnectionStatus('Playing as ' + playerColor, true);
+            
+            if (playerColor === 'white') {
+                players.white.name = 'You';
+                players.black.name = 'Opponent';
+            } else {
+                players.white.name = 'Opponent';
+                players.black.name = 'You';
+            }
+            
+            updatePlayerDisplay('white');
+            updatePlayerDisplay('black');
+            break;
+            
+        case 'OPPONENT_MOVE':
+            var move = game.move(data.move);
+            if (move) {
+                board.position(game.fen());
+                gameHistory = game.history();
+                currentIdx = gameHistory.length - 1;
+                updateStatus();
+                renderMoves();
+                
+                setTimeout(() => {
+                    executePremove();
+                }, 100);
+            }
+            break;
+            
+        case 'OPPONENT_DISCONNECTED':
+            alert('Your opponent disconnected from the game');
+            multiplayerMode = false;
+            updateConnectionStatus('Opponent disconnected', false);
+            break;
+            
+        case 'LOBBY_CANCELLED':
+            alert('The lobby was cancelled');
+            backToMenu();
+            break;
+            
+        case 'ERROR':
+            alert('Error: ' + data.message);
+            backToMenu();
+            break;
+    }
+}
+
+// REPLACE createLobby function
+function createLobby() {
+    var lobbyName = document.getElementById('lobbyName').value || 'My Chess Game';
+    var hasPassword = document.getElementById('passwordEnabled').checked;
+    var password = hasPassword ? document.getElementById('lobbyPassword').value : null;
+    
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert('Please connect to the server first! Click "Connect to Multiplayer Server" button.');
+        return;
+    }
+    
+    multiplayerMode = true;
+    
+    ws.send(JSON.stringify({
+        type: 'CREATE_LOBBY',
+        lobbyName: lobbyName,
+        hasPassword: hasPassword,
+        password: password
+    }));
+    
+    document.getElementById('lobbyForm').classList.remove('active');
+    document.getElementById('waitingRoom').classList.add('active');
+}
+
+// REPLACE joinLobby function
+function joinLobby() {
+    var code = document.getElementById('joinCode').value.toUpperCase();
+    var password = document.getElementById('joinPassword').value;
+    
+    if (!code || code.length !== 6) {
+        alert('Please enter a valid 6-digit lobby code');
+        return;
+    }
+    
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert('Please connect to the server first! Click "Connect to Multiplayer Server" button.');
+        return;
+    }
+    
+    multiplayerMode = true;
+    
+    ws.send(JSON.stringify({
+        type: 'JOIN_LOBBY',
+        code: code,
+        password: password
+    }));
+    
+    document.getElementById('joinForm').classList.remove('active');
+    document.getElementById('waitingRoom').classList.add('active');
+    document.getElementById('displayLobbyCode').textContent = code;
+}
+
+// REPLACE cancelLobby function
+function cancelLobby() {
+    if (countdownInterval) {
+        clearInterval(countdownInterval);
+    }
+    
+    if (ws && ws.readyState === WebSocket.OPEN && currentLobby) {
+        ws.send(JSON.stringify({
+            type: 'CANCEL_LOBBY',
+            code: currentLobby
+        }));
+    }
+    
+    multiplayerMode = false;
+    currentLobby = null;
+    playerColor = null;
+    backToMenu();
+    updateConnectionStatus('Disconnected', false);
+}
+
+// Manual connection button
+function manualConnectServer() {
+    connectWebSocket();
+}
+
+// MODIFY the onDrop function to send moves to server
+// Find your existing onDrop function and ADD these lines at the end:
+
+function onDrop(source, target) {
+    var piece = game.get(source);
+    if (!piece) return 'snapback';
+    
+    var turn = game.turn();
+    var isPieceCorrectColor = (turn === 'w' && piece.color === 'w') ||
+                               (turn === 'b' && piece.color === 'b');
+    
+    // Check if this should be a premove
+    if (!isPieceCorrectColor && premoveEnabled) {
+        setPremove(source, target);
+        return 'snapback';
+    }
+    
+    // In multiplayer, verify it's our turn
+    if (multiplayerMode && playerColor) {
+        var myTurn = (playerColor === 'white' && turn === 'w') || 
+                     (playerColor === 'black' && turn === 'b');
+        if (!myTurn) return 'snapback';
+    }
+    
+    var move = game.move({ from: source, to: target, promotion: 'q' });
+    if (move === null) return 'snapback';
+    
+    gameHistory = game.history();
+    currentIdx = gameHistory.length - 1;
+    
+    updateStatus();
+    renderMoves();
+    
+    // *** ADD THIS: Send move to server in multiplayer ***
+    if (multiplayerMode && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'MAKE_MOVE',
+            move: { from: source, to: target, promotion: 'q' }
+        }));
+    }
+    // *** END OF ADDITION ***
+    
+    // Remove or comment out the simulateOpponentMove call
+    // if (multiplayerMode && playerColor) {
+    //     setTimeout(() => {
+    //         simulateOpponentMove();
+    //     }, 1000 + Math.random() * 2000);
+    // }
+}
+</script>
+
+<!-- ================================================================= -->
+<!-- DONE! Now start the server and test your multiplayer game -->
+<!-- ================================================================= -->
