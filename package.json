@@ -6,7 +6,11 @@
   "scripts": {
     "start": "node chess-server.js"
   },
-  "keywords": ["chess", "multiplayer", "websocket"],
+  "keywords": [
+    "chess",
+    "multiplayer",
+    "websocket"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
